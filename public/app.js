@@ -3,7 +3,7 @@
   'use strict';
 
   // ---------- state & utils ----------
-  const state = { user: null, trades: [], stats: null, filter: 'all', symbolQ: '' };
+  const state = { user: null, trades: [], stats: null, filter: 'all', symbolQ: '', calMonth: null };
   const $ = (sel, el = document) => el.querySelector(sel);
   const app = $('#app');
 
@@ -390,6 +390,135 @@
     return `${s}$${a.toFixed(0)}`;
   };
 
+  // ---------- P&L calendar ----------
+  const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const monthStart = (d = new Date()) => new Date(d.getFullYear(), d.getMonth(), 1);
+  // A closed trade counts on the day it was closed (realized P&L); an open trade on the day it was opened.
+  const tradeDay = (t) => ((t.status === 'closed' ? t.closed_at || t.opened_at : t.opened_at) || '').slice(0, 10);
+  const calMoney = (v) => (v > 0 ? '+' : '') + (Math.abs(v) >= 1000 ? compactMoney(v) : money(v, false));
+
+  function groupByDay(trades) {
+    const m = new Map();
+    for (const t of trades) {
+      const k = tradeDay(t); if (!k) continue;
+      const d = m.get(k) || { pnl: 0, closed: 0, open: 0, trades: [] };
+      d.trades.push(t);
+      if (t.status === 'closed') { d.pnl += t.pnl; d.closed++; } else d.open++;
+      m.set(k, d);
+    }
+    return m;
+  }
+
+  function paintCalendar(el, trades, { editable, month, onMonth }) {
+    if (!el) return;
+    const days = groupByDay(trades);
+    const y = month.getFullYear(), mo = month.getMonth();
+    const nDays = new Date(y, mo + 1, 0).getDate();
+    const lead = (new Date(y, mo, 1).getDay() + 6) % 7; // weeks start on Monday
+    const todayK = today();
+    const cells = Array(lead).fill(null);
+    for (let d = 1; d <= nDays; d++) cells.push(new Date(y, mo, d));
+    while (cells.length % 7) cells.push(null);
+
+    let mPnl = 0, mTrades = 0, green = 0, red = 0, maxAbs = 0;
+    for (let d = 1; d <= nDays; d++) {
+      const x = days.get(ymd(new Date(y, mo, d))); if (!x) continue;
+      mPnl += x.pnl; mTrades += x.trades.length;
+      if (x.closed) { if (x.pnl > 0) green++; else if (x.pnl < 0) red++; maxAbs = Math.max(maxAbs, Math.abs(x.pnl)); }
+    }
+
+    const cellHtml = (d) => {
+      if (!d) return '<div class="cal-cell blank" aria-hidden="true"></div>';
+      const k = ymd(d), x = days.get(k);
+      const tone = x && x.closed ? (x.pnl > 0 ? 'win' : x.pnl < 0 ? 'loss' : 'flat') : '';
+      const s = x && x.closed && maxAbs ? (0.08 + 0.24 * (Math.abs(x.pnl) / maxAbs)).toFixed(3) : 0;
+      const n = x ? x.trades.length : 0;
+      const aria = `${d.toLocaleDateString('en-US', { month: 'long', day: 'numeric' })}: ${n ? `${n} trade${n === 1 ? '' : 's'}${x.closed ? ', ' + money(x.pnl) : ''}` : 'no trades'}`;
+      return `<button type="button" class="cal-cell ${tone} ${k === todayK ? 'today' : ''}" data-day="${k}" style="--s:${s}"
+          ${editable || x ? '' : 'disabled'} aria-label="${esc(aria)}">
+        <span class="cal-d">${d.getDate()}</span>
+        ${x ? `<span class="cal-body">${x.closed ? `<span class="cal-p">${calMoney(x.pnl)}</span>` : ''}
+            <span class="cal-n">${n} trade${n === 1 ? '' : 's'}${x.open ? ` · ${x.open} open` : ''}</span></span>
+            ${x.open && !x.closed ? '<span class="cal-dot" title="Open trade"></span>' : ''}`
+          : editable ? `<span class="cal-add">${ic.plus}</span>` : ''}
+      </button>`;
+    };
+    const weekHtml = (w) => {
+      let p = 0, n = 0;
+      w.forEach((d) => { const x = d && days.get(ymd(d)); if (x) { p += x.pnl; n += x.closed; } });
+      return `<div class="cal-week" title="Week total"><span class="num ${cls(p)}">${n ? calMoney(p) : '—'}</span></div>`;
+    };
+    const weeks = [];
+    for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7));
+    const label = new Date(y, mo, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+
+    el.innerHTML = `
+      <div class="card-head cal-head">
+        <div class="cal-nav">
+          <button class="btn btn-sm cal-arrow" data-nav="-1" aria-label="Previous month">‹</button>
+          <h2 class="card-title cal-title">${label}</h2>
+          <button class="btn btn-sm cal-arrow" data-nav="1" aria-label="Next month">›</button>
+          <button class="btn btn-ghost btn-sm" data-nav="0">Today</button>
+        </div>
+        <div class="cal-sum">
+          <span>Month <b class="num ${cls(mPnl)}">${money(mPnl)}</b></span>
+          <span>${mTrades} trade${mTrades === 1 ? '' : 's'}</span>
+          <span><b class="pos">${green}</b> green · <b class="neg">${red}</b> red days</span>
+        </div>
+      </div>
+      <div class="cal-grid">
+        ${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((d) => `<div class="cal-dow">${d}</div>`).join('')}
+        <div class="cal-dow cal-wk-h">Week</div>
+        ${weeks.map((w) => w.map(cellHtml).join('') + weekHtml(w)).join('')}
+      </div>
+      ${editable ? '<div class="cal-hint">Tap any day to see its trades or add new ones.</div>' : ''}`;
+    el.querySelectorAll('[data-nav]').forEach((b) => {
+      b.onclick = () => { const n = Number(b.dataset.nav); onMonth(n === 0 ? monthStart() : new Date(y, mo + n, 1)); };
+    });
+    el.querySelector('.cal-grid').onclick = (e) => {
+      const c = e.target.closest('[data-day]');
+      if (c && !c.disabled) dayModal(c.dataset.day, { editable, trades });
+    };
+  }
+
+  function dayModal(day, { editable, trades }) {
+    const list = (editable ? state.trades : trades).filter((t) => tradeDay(t) === day);
+    const closed = list.filter((t) => t.status === 'closed');
+    const pnl = closed.reduce((a, t) => a + t.pnl, 0);
+    const wins = closed.filter((t) => t.pnl > 0).length;
+    const title = new Date(day + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+    $('#modal-root').innerHTML = `
+      <div class="modal-bg" id="mbg"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="mt">
+        <div class="modal-head"><div><h2 id="mt">${title}</h2>
+          <div class="muted" style="font-size:13px;margin-top:2px">${list.length
+            ? `${list.length} trade${list.length === 1 ? '' : 's'}${closed.length ? ` · ${wins} of ${closed.length} won` : ' · all open'}`
+            : 'No trades logged'}</div></div>
+          <button type="button" class="btn btn-ghost btn-sm" id="mclose" aria-label="Close">${ic.x}</button></div>
+        <div class="modal-body">
+          <div class="pnl-preview"><span class="muted">Day P&amp;L</span><span class="v ${cls(pnl)}">${closed.length ? money(pnl) : '—'}</span></div>
+          ${list.length ? `<div class="day-list">${list.map((t) => `
+            <button type="button" class="day-row" data-id="${t.id}" ${editable ? '' : 'disabled'}>
+              <span class="day-sym"><span class="sym">${esc(t.symbol)}</span> <span class="tag ${t.side}">${t.side}</span></span>
+              <span class="mono muted day-px">${num(t.quantity, 6)} @ ${num(t.entry_price, 6)}${t.exit_price === null ? '' : ' → ' + num(t.exit_price, 6)}</span>
+              <span class="mono ${cls(t.pnl)}">${t.pnl === null ? '<span class="tag open">Open</span>' : money(t.pnl)}</span>
+            </button>`).join('')}</div>`
+            : `<div class="empty" style="padding:20px 0"><p>${editable ? 'Nothing logged on this day yet.' : 'No trades on this day.'}</p></div>`}
+        </div>
+        ${editable ? `<div class="modal-foot"><span class="hint" style="align-self:center">${list.length ? 'Click a trade to edit it.' : ''}</span>
+          <button type="button" class="btn btn-primary" id="day-add">${ic.plus} Add trade</button></div>` : ''}
+      </div></div>`;
+    $('#mclose').onclick = closeModal;
+    $('#mbg').onmousedown = (e) => { if (e.target.id === 'mbg') closeModal(); };
+    document.onkeydown = (e) => { if (e.key === 'Escape') closeModal(); };
+    if (!editable) return;
+    $('#day-add').onclick = () => tradeModal(null, { day });
+    $('#day-add').focus();
+    $('.modal-body').onclick = (e) => {
+      const r = e.target.closest('.day-row'); if (!r) return;
+      tradeModal(state.trades.find((t) => t.id === Number(r.dataset.id)), { day });
+    };
+  }
+
   // ---------- trades table ----------
   function tradeRows(trades, editable) {
     if (!trades.length) return '';
@@ -426,10 +555,12 @@
     state.trades = trades; state.stats = stats;
   }
 
-  async function renderDashboard() {
-    shell(`<div class="loading"><span class="spinner"></span></div>`, 'dash');
+  async function renderDashboard(quiet = false) {
+    const scrollY = window.scrollY;
+    if (!quiet) shell(`<div class="loading"><span class="spinner"></span></div>`, 'dash');
     try { await loadMine(); } catch (e) { return handleErr(e); }
     const u = state.user, s = state.stats;
+    if (!state.calMonth) state.calMonth = monthStart();
     shell(`
       <div class="page-head">
         <div><div class="eyebrow">Dashboard</div><h1>Welcome back, ${esc(u.display_name)}</h1></div>
@@ -439,6 +570,7 @@
         </div>
       </div>
       ${statsGrid(s)}
+      <div class="card cal-card" id="cal"></div>
       ${chartCard(s)}
       <div class="card">
         <div class="card-head">
@@ -451,8 +583,12 @@
         </div>
         <div id="table-slot"></div>
       </div>`, 'dash');
+    const paintCal = () => paintCalendar($('#cal'), state.trades, {
+      editable: true, month: state.calMonth, onMonth: (m) => { state.calMonth = m; paintCal(); } });
+    paintCal();
     drawEquity($('#equity'), s.equity);
     paintTable();
+    if (quiet) window.scrollTo(0, scrollY);
     $('#new-trade').onclick = () => tradeModal();
     $('#export').onclick = exportCsv;
     $('#filters').onclick = (e) => {
@@ -496,14 +632,16 @@
   // ---------- trade modal ----------
   function closeModal() { const r = $('#modal-root'); if (r) r.innerHTML = ''; document.onkeydown = null; }
 
-  function tradeModal(t) {
-    const editing = !!t;
-    t = t || { symbol: '', side: 'long', quantity: '', entry_price: '', exit_price: null, fees: 0, opened_at: today(), closed_at: null, notes: '' };
+  function tradeModal(t, opts = {}) {
+    const editing = !!t, day = opts.day || null;
+    t = t || { symbol: '', side: 'long', quantity: '', entry_price: '', exit_price: null, fees: 0,
+      opened_at: day || today(), closed_at: day, notes: '' };
+    const dayLabel = day ? new Date(day + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
     let side = t.side;
     const v = (x) => (x === null || x === undefined ? '' : esc(x));
     $('#modal-root').innerHTML = `
       <div class="modal-bg" id="mbg"><form class="modal" id="tf" novalidate role="dialog" aria-modal="true" aria-labelledby="mt">
-        <div class="modal-head"><h2 id="mt">${editing ? 'Edit trade' : 'New trade'}</h2>
+        <div class="modal-head"><h2 id="mt">${editing ? 'Edit trade' : 'New trade'}${day && !editing ? ` <span class="muted" style="font-weight:500">· ${dayLabel}</span>` : ''}</h2>
           <button type="button" class="btn btn-ghost btn-sm" id="mclose" aria-label="Close">${ic.x}</button></div>
         <div class="modal-body">
           <div id="terr"></div>
@@ -526,7 +664,7 @@
           </div>
           <div class="field"><label for="notes">Notes</label><textarea class="input" id="notes" name="notes" maxlength="2000" placeholder="Setup, reasoning, what you'd do differently…">${v(t.notes)}</textarea></div>
           <div class="pnl-preview"><span class="muted">Estimated P&amp;L</span><span class="v" id="pv">—</span></div>
-          <span class="hint">Leave exit price empty to keep the trade open. Quantity = shares, units, contracts or coins.</span>
+          <span class="hint">Leave exit price empty to keep the trade open. Quantity = shares, units, contracts or coins.${day && !editing ? ' Dates are set to the day you picked; change them if the trade spanned several days.' : ''}</span>
         </div>
         <div class="modal-foot">
           <div>${editing ? `<button type="button" class="btn btn-danger" id="del">Delete</button>` : ''}</div>
@@ -551,7 +689,8 @@
       $('#side').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
       preview();
     };
-    const close = () => closeModal();
+    const back = () => (day ? dayModal(day, { editable: true }) : closeModal());
+    const close = back;
     $('#mclose').onclick = close; $('#mcancel').onclick = close;
     $('#mbg').onmousedown = (e) => { if (e.target.id === 'mbg') close(); };
     document.onkeydown = (e) => { if (e.key === 'Escape') close(); };
@@ -563,8 +702,9 @@
       const btn = f.querySelector('button[type=submit]'); btn.disabled = true;
       try {
         await api(editing ? `/trades/${t.id}` : '/trades', { method: editing ? 'PUT' : 'POST', body });
-        closeModal(); toast(editing ? 'Trade updated' : 'Trade added');
-        renderDashboard();
+        toast(editing ? 'Trade updated' : 'Trade added');
+        await renderDashboard(true);
+        back();
       } catch (err) {
         $('#terr').innerHTML = `<div class="error-box">${esc(err.message)}</div>`; btn.disabled = false;
       }
@@ -572,7 +712,7 @@
     const del = $('#del');
     if (del) del.onclick = async () => {
       if (!confirm(`Delete this ${t.symbol} trade? This can't be undone.`)) return;
-      try { await api(`/trades/${t.id}`, { method: 'DELETE', body: {} }); closeModal(); toast('Trade deleted'); renderDashboard(); }
+      try { await api(`/trades/${t.id}`, { method: 'DELETE', body: {} }); toast('Trade deleted'); await renderDashboard(true); back(); }
       catch (err) { $('#terr').innerHTML = `<div class="error-box">${esc(err.message)}</div>`; }
     };
   }
@@ -602,10 +742,12 @@
       return shell(`${head}<div class="card empty"><span class="ico">${ic.lock}</span><h3>This profile is private</h3>
         <p>@${esc(u.username)} has chosen to keep their trades private.</p></div>`);
     }
-    shell(`${head}${statsGrid(data.stats)}${chartCard(data.stats)}
+    shell(`${head}${statsGrid(data.stats)}<div class="card cal-card" id="cal"></div>${chartCard(data.stats)}
       <div class="card"><div class="card-head"><h2 class="card-title">Trades</h2><span class="muted" style="font-size:13px">${data.trades.length} total</span></div>
       ${tradesTable(data.trades, { editable: false, emptyHtml: `<div class="empty"><p>${isSelf ? "You haven't" : `@${esc(u.username)} hasn't`} logged any trades yet.</p></div>` })}</div>`,
       isSelf ? 'me' : '');
+    const paintCal = (month) => paintCalendar($('#cal'), data.trades, { editable: false, month, onMonth: paintCal });
+    paintCal(monthStart());
     drawEquity($('#equity'), data.stats.equity);
   }
 

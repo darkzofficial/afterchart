@@ -32,6 +32,7 @@ Open http://localhost:3000. Tables are created automatically on start (or run `n
 - Everything behind login — visitors only see the landing page
 - Log trades: symbol, long/short, quantity, entry, exit, fees, dates, notes (leave exit blank for open trades)
 - Auto-calculated P&L and % return, live preview while typing
+- P&L calendar: each day shows its realized P&L (green/red), trade count and weekly totals; click any day to see its trades or add new ones for that date
 - Dashboard: net P&L, win rate, profit factor, max drawdown, avg win/loss, best/worst, equity curve
 - Trade log with filters (open / closed / wins / losses) and symbol search; CSV export
 - Search bar (press `/`) to find traders by @username and view their public profile, stats and trades
