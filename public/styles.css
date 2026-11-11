@@ -204,7 +204,7 @@ input[type="date"].input { color-scheme: dark; }
 .menu-list a:hover, .menu-list button:hover { background: var(--surface-hi); text-decoration: none; }
 
 /* ---------- app pages ---------- */
-.page { padding: 32px 0 80px; }
+.page { padding-top: 32px; padding-bottom: 80px; }
 .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 24px; flex-wrap: wrap; }
 .page-head h1 { margin: 4px 0 0; font-size: 28px; letter-spacing: -0.03em; }
 .page-head .actions { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -335,13 +335,16 @@ table.trades { width: 100%; border-collapse: collapse; font-size: 14px; min-widt
 .cal-week { display: flex; flex-direction: column; justify-content: center; align-items: flex-end; gap: 2px; padding: 8px 10px;
   border-radius: 10px; border: 1px dashed var(--line); background: rgba(2, 8, 7, .25); font: 600 14px var(--mono); }
 .cal-week .k { font: 500 11px var(--font); color: var(--dim); text-transform: uppercase; letter-spacing: .08em; }
+.cal-short { display: none; }
 .cal-hint { padding: 0 16px 14px; font-size: 12px; color: var(--dim); }
 @media (max-width: 760px) {
   .cal-grid { grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; padding: 10px; }
   .cal-week, .cal-wk-h { display: none; }
   .cal-cell { min-height: 56px; padding: 5px; border-radius: 8px; gap: 2px; }
   .cal-d { font-size: 11px; }
-  .cal-p { font-size: 10px; letter-spacing: -0.04em; }
+  .cal-p { font-size: 11px; letter-spacing: -0.03em; }
+  .cal-full { display: none; }
+  .cal-short { display: inline; }
   .cal-n, .cal-add { display: none; }
   .cal-dot { top: 6px; right: 6px; width: 5px; height: 5px; }
   .cal-title { min-width: 0; }

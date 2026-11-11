@@ -396,6 +396,7 @@
   // A closed trade counts on the day it was closed (realized P&L); an open trade on the day it was opened.
   const tradeDay = (t) => ((t.status === 'closed' ? t.closed_at || t.opened_at : t.opened_at) || '').slice(0, 10);
   const calMoney = (v) => (v > 0 ? '+' : '') + (Math.abs(v) >= 1000 ? compactMoney(v) : money(v, false));
+  const calMoneyShort = (v) => (v > 0 ? '+' : '') + (Math.abs(v) >= 1000 ? compactMoney(v) : (v < 0 ? '−$' : '$') + Math.round(Math.abs(v)));
 
   function groupByDay(trades) {
     const m = new Map();
@@ -437,7 +438,7 @@
       return `<button type="button" class="cal-cell ${tone} ${k === todayK ? 'today' : ''}" data-day="${k}" style="--s:${s}"
           ${editable || x ? '' : 'disabled'} aria-label="${esc(aria)}">
         <span class="cal-d">${d.getDate()}</span>
-        ${x ? `<span class="cal-body">${x.closed ? `<span class="cal-p">${calMoney(x.pnl)}</span>` : ''}
+        ${x ? `<span class="cal-body">${x.closed ? `<span class="cal-p"><span class="cal-full">${calMoney(x.pnl)}</span><span class="cal-short">${calMoneyShort(x.pnl)}</span></span>` : ''}
             <span class="cal-n">${n} trade${n === 1 ? '' : 's'}${x.open ? ` · ${x.open} open` : ''}</span></span>
             ${x.open && !x.closed ? '<span class="cal-dot" title="Open trade"></span>' : ''}`
           : editable ? `<span class="cal-add">${ic.plus}</span>` : ''}

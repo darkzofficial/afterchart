@@ -3,3 +3,6 @@ data/
 .neon
 .env*
 !.env.example
+marketing/ad/build/
+marketing/ad/out/
+__pycache__/
