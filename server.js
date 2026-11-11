@@ -5,54 +5,25 @@ const bcrypt = require('bcryptjs');
 const crypto = require('node:crypto');
 const path = require('node:path');
 const { Pool } = require('pg');
+const { runMigrations } = require('./migrate');
 
 const PORT = process.env.PORT || 3000;
 const SESSION_DAYS = 30;
 const IS_PROD = process.env.NODE_ENV === 'production';
 
 if (!process.env.DATABASE_URL) {
-  console.error('Missing DATABASE_URL. Set it to your Postgres connection string (e.g. from Neon).');
+  console.error('Missing DATABASE_URL. Run `neon env pull` to write .env.local, or set it in your host.');
   process.exit(1);
 }
+// App traffic uses Neon's pooled connection string (DATABASE_URL, "-pooler" host).
+// Schema changes use the direct one instead; see migrate.js.
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 5 });
+pool.on('error', (e) => console.error('Postgres pool error:', e.message)); // e.g. compute scaled to zero
+const USER_COLS = 'u.id, u.username, u.display_name, u.email, u.bio, u.is_public, u.created_at';
+const TRADE_SELECT = 'id, symbol, side, quantity, entry_price, exit_price, fees, opened_at, closed_at, notes';
 const q = async (sql, params = []) => (await pool.query(sql, params)).rows;
 const one = async (sql, params = []) => (await pool.query(sql, params)).rows[0];
 
-async function migrate() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS users (
-      id SERIAL PRIMARY KEY,
-      username TEXT NOT NULL UNIQUE,
-      display_name TEXT NOT NULL,
-      email TEXT NOT NULL UNIQUE,
-      password_hash TEXT NOT NULL,
-      bio TEXT NOT NULL DEFAULT '',
-      is_public BOOLEAN NOT NULL DEFAULT TRUE,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    );
-    CREATE TABLE IF NOT EXISTS sessions (
-      token_hash TEXT PRIMARY KEY,
-      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      expires_at BIGINT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS trades (
-      id SERIAL PRIMARY KEY,
-      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      symbol TEXT NOT NULL,
-      side TEXT NOT NULL CHECK (side IN ('long','short')),
-      quantity DOUBLE PRECISION NOT NULL,
-      entry_price DOUBLE PRECISION NOT NULL,
-      exit_price DOUBLE PRECISION,
-      fees DOUBLE PRECISION NOT NULL DEFAULT 0,
-      opened_at TEXT NOT NULL,
-      closed_at TEXT,
-      notes TEXT NOT NULL DEFAULT '',
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    );
-    CREATE INDEX IF NOT EXISTS idx_trades_user ON trades(user_id, opened_at);
-    CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
-  `);
-}
 
 // ---------- helpers ----------
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
@@ -131,7 +102,7 @@ function stats(trades) {
 }
 
 async function userTrades(userId) {
-  return (await q('SELECT * FROM trades WHERE user_id = $1 ORDER BY opened_at DESC, id DESC', [userId])).map(decorate);
+  return (await q(`SELECT ${TRADE_SELECT} FROM trades WHERE user_id = $1 ORDER BY opened_at DESC, id DESC`, [userId])).map(decorate);
 }
 
 // validation
@@ -197,7 +168,7 @@ app.get('/healthz', (req, res) => res.send('ok'));
 app.use('/api', async (req, res, next) => {
   const token = parseCookies(req.headers.cookie).ac_session;
   if (token) {
-    req.user = await one(`SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id
+    req.user = await one(`SELECT ${USER_COLS} FROM sessions s JOIN users u ON u.id = s.user_id
                           WHERE s.token_hash = $1 AND s.expires_at > $2`, [sha256(token), Date.now()]);
   }
   next();
@@ -228,7 +199,7 @@ app.post('/api/signup', rateLimit(10, 15 * 60e3), async (req, res) => {
   const hash = await bcrypt.hash(password, 11);
   let u;
   try {
-    u = await one(`INSERT INTO users (username, display_name, email, password_hash) VALUES ($1,$2,$3,$4) RETURNING *`,
+    u = await one(`INSERT INTO users (username, display_name, email, password_hash) VALUES ($1,$2,$3,$4) RETURNING id, username, display_name, email, bio, is_public, created_at`,
       [username, display_name, email, hash]);
   } catch (e) {
     if (e.code === '23505') return res.status(409).json({ error: 'That @username or email is already registered.' });
@@ -241,7 +212,7 @@ app.post('/api/signup', rateLimit(10, 15 * 60e3), async (req, res) => {
 app.post('/api/login', rateLimit(15, 15 * 60e3), async (req, res) => {
   const id = String(req.body.identifier || '').trim().replace(/^@/, '').toLowerCase();
   const password = String(req.body.password || '').slice(0, 200);
-  const u = await one('SELECT * FROM users WHERE username = $1 OR email = $1', [id]);
+  const u = await one('SELECT id, username, display_name, email, bio, is_public, created_at, password_hash FROM users WHERE username = $1 OR email = $1', [id]);
   if (!u || !(await bcrypt.compare(password, u.password_hash)))
     return res.status(401).json({ error: 'Incorrect username/email or password.' });
   await createSession(res, u.id);
@@ -261,7 +232,7 @@ app.patch('/api/me', requireAuth, async (req, res) => {
   const display_name = String(req.body.display_name ?? req.user.display_name).trim().slice(0, 50) || req.user.username;
   const bio = String(req.body.bio ?? req.user.bio).slice(0, 280);
   const is_public = req.body.is_public === undefined ? req.user.is_public : !!req.body.is_public;
-  const u = await one('UPDATE users SET display_name = $1, bio = $2, is_public = $3 WHERE id = $4 RETURNING *',
+  const u = await one('UPDATE users SET display_name = $1, bio = $2, is_public = $3 WHERE id = $4 RETURNING id, username, display_name, email, bio, is_public, created_at',
     [display_name, bio, is_public, req.user.id]);
   res.json({ user: privateUser(u) });
 });
@@ -277,7 +248,7 @@ app.post('/api/trades', requireAuth, async (req, res) => {
   const { t, errs } = validateTrade(req.body);
   if (errs.length) return res.status(400).json({ error: errs.join(' ') });
   const row = await one(`INSERT INTO trades (user_id, ${TRADE_COLS.join(', ')})
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`, [req.user.id, ...TRADE_COLS.map((c) => t[c])]);
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING ${TRADE_SELECT}`, [req.user.id, ...TRADE_COLS.map((c) => t[c])]);
   res.json({ trade: decorate(row) });
 });
 
@@ -286,7 +257,7 @@ app.put('/api/trades/:id', requireAuth, async (req, res) => {
   const { t, errs } = validateTrade(req.body);
   if (errs.length) return res.status(400).json({ error: errs.join(' ') });
   const row = Number.isSafeInteger(id) && await one(`UPDATE trades SET symbol=$1, side=$2, quantity=$3, entry_price=$4, exit_price=$5,
-    fees=$6, opened_at=$7, closed_at=$8, notes=$9 WHERE id = $10 AND user_id = $11 RETURNING *`,
+    fees=$6, opened_at=$7, closed_at=$8, notes=$9 WHERE id = $10 AND user_id = $11 RETURNING ${TRADE_SELECT}`,
     [...TRADE_COLS.map((c) => t[c]), id, req.user.id]);
   if (!row) return res.status(404).json({ error: 'Trade not found.' });
   res.json({ trade: decorate(row) });
@@ -304,7 +275,7 @@ app.get('/api/users/search', requireAuth, async (req, res) => {
   if (!term) return res.json({ users: [] });
   const escaped = term.replace(/[%_\\]/g, (c) => '\\' + c);
   const rows = await q(`
-    SELECT u.*, (SELECT COUNT(*)::int FROM trades t WHERE t.user_id = u.id) AS trade_count
+    SELECT u.username, u.display_name, u.bio, u.is_public, u.created_at, (SELECT COUNT(*)::int FROM trades t WHERE t.user_id = u.id) AS trade_count
     FROM users u WHERE u.username ILIKE $1 OR u.display_name ILIKE $1
     ORDER BY (u.username = lower($2)) DESC, (u.username ILIKE $3) DESC, u.username LIMIT 10`,
     ['%' + escaped + '%', term, escaped + '%']);
@@ -312,7 +283,7 @@ app.get('/api/users/search', requireAuth, async (req, res) => {
 });
 
 app.get('/api/users/:username', requireAuth, async (req, res) => {
-  const u = await one('SELECT * FROM users WHERE username = $1', [String(req.params.username).replace(/^@/, '').toLowerCase()]);
+  const u = await one('SELECT id, username, display_name, bio, is_public, created_at FROM users WHERE username = $1', [String(req.params.username).replace(/^@/, '').toLowerCase()]);
   if (!u) return res.status(404).json({ error: 'No trader with that @username.' });
   const isSelf = u.id === req.user.id;
   if (!u.is_public && !isSelf) return res.json({ user: publicUser(u), private: true, is_self: false });
@@ -335,6 +306,6 @@ app.use((err, req, res, next) => {
 // purge expired sessions hourly
 setInterval(() => q('DELETE FROM sessions WHERE expires_at < $1', [Date.now()]).catch(console.error), 3600e3).unref();
 
-migrate()
+runMigrations()
   .then(() => app.listen(PORT, () => console.log(`Afterchart running on http://localhost:${PORT}`)))
   .catch((e) => { console.error('Database setup failed:', e.message); process.exit(1); });

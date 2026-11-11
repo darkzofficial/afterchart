@@ -4,7 +4,8 @@
   "description": "Afterchart - free trade journal",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node --env-file-if-exists=.env.local server.js",
+    "migrate": "node --env-file-if-exists=.env.local migrate.js"
   },
   "keywords": [],
   "author": "",
@@ -17,6 +18,6 @@
     "pg": "^8.23.1"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.9"
   }
 }
