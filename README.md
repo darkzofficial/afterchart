@@ -22,6 +22,7 @@ Open http://localhost:3000. Tables are created automatically on start (or run `n
 ## What's inside
 
 - `server.js` — Express API (Postgres via `pg`).
+- `chat.js` — live chat API + real-time stream.
 - `migrate.js` — schema, applied over the direct connection.
 - `neon.ts` / `.neon` — Neon project config and link (from `neon init`).
 - `public/` — the website (HTML, CSS, JS). No build step.
@@ -35,6 +36,7 @@ Open http://localhost:3000. Tables are created automatically on start (or run `n
 - P&L calendar: each day shows its realized P&L (green/red), trade count and weekly totals; click any day to see its trades or add new ones for that date
 - Dashboard: net P&L, win rate, profit factor, max drawdown, avg win/loss, best/worst, equity curve
 - Trade log with filters (open / closed / wins / losses) and symbol search; CSV export
+- Live chat: topic rooms (#general, #stocks, #forex, #crypto, #futures, #wins-and-losses) with real-time messages over Server-Sent Events, online counts, @mention links, $TICKER highlighting, delete-your-own, rate limiting
 - Search bar (press `/`) to find traders by @username and view their public profile, stats and trades
 - Settings: display name, bio, public/private profile toggle
 

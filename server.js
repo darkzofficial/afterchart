@@ -6,6 +6,7 @@ const crypto = require('node:crypto');
 const path = require('node:path');
 const { Pool } = require('pg');
 const { runMigrations } = require('./migrate');
+const { registerChat } = require('./chat');
 
 const PORT = process.env.PORT || 3000;
 const SESSION_DAYS = 30;
@@ -290,6 +291,8 @@ app.get('/api/users/:username', requireAuth, async (req, res) => {
   const trades = await userTrades(u.id);
   res.json({ user: publicUser(u), is_self: isSelf, trades, stats: stats(trades) });
 });
+
+registerChat(app, { q, one, requireAuth });
 
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found.' }));
 

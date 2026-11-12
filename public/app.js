@@ -55,6 +55,8 @@
     log: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="3"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>',
     chart: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/></svg>',
     users: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14a6.5 6.5 0 0 1 3.5 6"/></svg>',
+    send: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4 20-7z"/></svg>',
+    chat: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20.5l1.4-4.9A8 8 0 1 1 21 12z"/></svg>',
     lock: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
   };
 
@@ -71,6 +73,8 @@
 
   async function render() {
     closeModal();
+    stopChat();
+    document.body.classList.remove('chat-mode');
     const p = location.pathname.replace(/\/+$/, '') || '/';
     const authed = !!state.user;
     document.body.classList.toggle('in-app', authed);
@@ -87,6 +91,8 @@
     }
     if (p === '/dashboard') return renderDashboard();
     if (p === '/settings') return renderSettings();
+    const cm = p.match(/^\/chat(?:\/([a-z-]+))?$/);
+    if (cm) return renderChat(cm[1] || 'general');
     const m = p.match(/^\/(?:u\/|@)([A-Za-z0-9_]+)$/);
     if (m) return renderProfile(m[1]);
     shell(`<div class="empty"><h3>Page not found</h3><p><a href="/dashboard" data-link>Back to dashboard</a></p></div>`);
@@ -224,20 +230,23 @@
         <div class="nav-links">
           <a class="nav-link ${active === 'dash' ? 'active' : ''}" href="/dashboard" data-link>Dashboard</a>
           <a class="nav-link ${active === 'me' ? 'active' : ''}" href="/u/${esc(u.username)}" data-link>My profile</a>
+          <a class="nav-link ${active === 'chat' ? 'active' : ''}" href="/chat" data-link><span class="live-dot sm"></span>Live chat</a>
         </div>
         <div class="spacer"></div>
         <div class="search" id="search">
           ${ic.search}
-          <input class="input" id="search-input" placeholder="Search traders by @" autocomplete="off" aria-label="Search traders" />
+          <input class="input" id="search-input" placeholder="Search @username" autocomplete="off" aria-label="Search traders" />
           <kbd>/</kbd>
           <div class="search-results" id="search-results" hidden></div>
         </div>
+        <a class="nav-chat ${active === 'chat' ? 'active' : ''}" href="/chat" data-link aria-label="Live chat">${ic.chat}</a>
         <div class="menu" id="menu">
           <button class="menu-btn" id="menu-btn" aria-label="Account menu" aria-haspopup="true"><span class="avatar">${initial(u)}</span></button>
           <div class="menu-list" id="menu-list" hidden>
             <div class="who"><b>${esc(u.display_name)}</b><span>@${esc(u.username)}</span></div>
             <a href="/dashboard" data-link>Dashboard</a>
             <a href="/u/${esc(u.username)}" data-link>My public profile</a>
+            <a href="/chat" data-link>Live chat</a>
             <a href="/settings" data-link>Settings</a>
             <button id="logout">Log out</button>
           </div>
@@ -750,6 +759,179 @@
     const paintCal = (month) => paintCalendar($('#cal'), data.trades, { editable: false, month, onMonth: paintCal });
     paintCal(monthStart());
     drawEquity($('#equity'), data.stats.equity);
+  }
+
+  // ---------- live chat ----------
+  const chat = { es: null, room: null, rooms: [], messages: [], hasMore: false, online: {} };
+  function stopChat() { if (chat.es) { chat.es.close(); chat.es = null; } }
+
+  const timeOf = (iso) => new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  function dayLabel(iso) {
+    const d = new Date(iso), t = new Date(), y = new Date(Date.now() - 864e5);
+    if (d.toDateString() === t.toDateString()) return 'Today';
+    if (d.toDateString() === y.toDateString()) return 'Yesterday';
+    return d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+  }
+  // escape first, then decorate @mentions and $TICKERS (safe: only matches our own escaped text)
+  const fmtBody = (b) => esc(b)
+    .replace(/(^|[^\w@])@([a-z0-9_]{3,20})\b/gi, (m, pre, u) => `${pre}<a class="mention" href="/u/${u.toLowerCase()}" data-link>@${u}</a>`)
+    .replace(/(^|[^\w$])\$([a-z]{1,6})\b/gi, (m, pre, t) => `${pre}<span class="cash">$${t.toUpperCase()}</span>`);
+
+  function msgsHTML() {
+    if (!chat.messages.length) {
+      const r = chat.rooms.find((x) => x.id === chat.room);
+      return `<div class="chat-empty"><span class="ico">${ic.chat}</span><h3>Welcome to #${esc(r.name)}</h3><p>${esc(r.desc)}. Be the first to say something.</p></div>`;
+    }
+    let out = chat.hasMore ? '<button class="btn btn-sm older" id="older">Load earlier messages</button>' : '<div class="chat-start">This is the start of the room.</div>';
+    let prev = null;
+    for (const m of chat.messages) {
+      const newDay = !prev || new Date(prev.created_at).toDateString() !== new Date(m.created_at).toDateString();
+      if (newDay) out += `<div class="day-div"><span>${dayLabel(m.created_at)}</span></div>`;
+      const cont = !newDay && prev && prev.username === m.username && new Date(m.created_at) - new Date(prev.created_at) < 5 * 6e4;
+      const mine = m.username === state.user.username;
+      out += `<div class="msg ${cont ? 'cont' : ''} ${mine ? 'mine' : ''}" data-id="${m.id}">
+        ${cont ? `<time class="msg-side">${timeOf(m.created_at)}</time>` : `<a class="avatar" href="/u/${esc(m.username)}" data-link>${initial(m)}</a>`}
+        <div class="msg-b">
+          ${cont ? '' : `<div class="msg-h"><a class="msg-name" href="/u/${esc(m.username)}" data-link>${esc(m.display_name)}</a><span class="msg-at">@${esc(m.username)}</span><time>${timeOf(m.created_at)}</time></div>`}
+          <div class="msg-t">${fmtBody(m.body)}</div>
+        </div>
+        ${mine ? `<button class="msg-del" data-del="${m.id}" title="Delete message" aria-label="Delete message">${ic.x}</button>` : ''}
+      </div>`;
+      prev = m;
+    }
+    return out;
+  }
+
+  function paintChat(mode = 'auto') {
+    const log = $('#chat-log'); if (!log) return;
+    const nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 120;
+    const fromBottom = log.scrollHeight - log.scrollTop;
+    log.innerHTML = msgsHTML();
+    if (mode === 'bottom' || (mode === 'auto' && nearBottom)) { log.scrollTop = log.scrollHeight; $('#new-pill').hidden = true; }
+    else if (mode === 'keep') log.scrollTop = log.scrollHeight - fromBottom;
+    else if (mode === 'auto') $('#new-pill').hidden = false;
+    const older = $('#older');
+    if (older) older.onclick = loadOlder;
+  }
+
+  function paintOnline() {
+    const n = chat.online[chat.room];
+    const el = $('#online-n'); if (el && n !== undefined) el.textContent = n;
+    document.querySelectorAll('[data-online]').forEach((b) => {
+      const c = chat.online[b.dataset.online] || 0; b.textContent = c ? c : ''; b.classList.toggle('on', c > 0);
+    });
+  }
+
+  function setLive(ok) { const l = $('#live'); if (l) { l.classList.toggle('down', !ok); $('#live-text').textContent = ok ? 'online' : 'reconnecting…'; } }
+
+  async function loadOlder() {
+    const b = $('#older'); if (b) b.disabled = true;
+    try {
+      const d = await api(`/chat/${chat.room}/messages?before=${chat.messages[0].id}`);
+      chat.messages = [...d.messages, ...chat.messages]; chat.hasMore = d.has_more;
+      paintChat('keep');
+    } catch (e) { toast(e.message); if (b) b.disabled = false; }
+  }
+
+  function connectChat(room) {
+    stopChat();
+    const es = new EventSource(`/api/chat/${room}/stream`);
+    chat.es = es;
+    let opened = false;
+    es.onopen = async () => {
+      setLive(true);
+      if (opened) { // after a reconnect, fill any gap
+        try {
+          const d = await api(`/chat/${room}/messages`);
+          const ids = new Set(chat.messages.map((m) => m.id));
+          const fresh = d.messages.filter((m) => !ids.has(m.id));
+          if (fresh.length) { chat.messages = [...chat.messages, ...fresh].sort((a, b) => a.id - b.id); paintChat(); }
+        } catch { /* ignore */ }
+      }
+      opened = true;
+    };
+    es.onerror = () => setLive(false);
+    es.addEventListener('message', (e) => {
+      const m = JSON.parse(e.data);
+      if (m.room !== chat.room || chat.messages.some((x) => x.id === m.id)) return;
+      chat.messages.push(m); paintChat(m.username === state.user.username ? 'bottom' : 'auto');
+    });
+    es.addEventListener('delete', (e) => {
+      const { id } = JSON.parse(e.data);
+      chat.messages = chat.messages.filter((x) => x.id !== id); paintChat('keep');
+    });
+    es.addEventListener('presence', (e) => { chat.online = JSON.parse(e.data); paintOnline(); });
+  }
+
+  async function renderChat(room) {
+    if (!chat.rooms.length) {
+      shell(`<div class="loading"><span class="spinner"></span></div>`, 'chat');
+      try { chat.rooms = (await api('/chat/rooms')).rooms; } catch (e) { return handleErr(e); }
+    }
+    const r = chat.rooms.find((x) => x.id === room);
+    if (!r) return go('/chat/general', true);
+    chat.room = room; chat.messages = []; chat.hasMore = false;
+    document.body.classList.add('chat-mode');
+    shell(`<div class="chat card">
+      <aside class="chat-rooms" aria-label="Rooms">
+        <div class="chat-rooms-h">Rooms</div>
+        ${chat.rooms.map((x) => `<a class="room ${x.id === room ? 'on' : ''}" href="/chat/${x.id}" data-link>
+          <span class="hash">#</span><span class="rn">${esc(x.name)}<small>${esc(x.desc)}</small></span><span class="room-on" data-online="${x.id}"></span></a>`).join('')}
+      </aside>
+      <section class="chat-main">
+        <header class="chat-head">
+          <div class="chat-title"><h1>#${esc(r.name)}</h1><span>${esc(r.desc)}</span></div>
+          <span class="live" id="live"><span class="live-dot"></span><b id="online-n">–</b><span id="live-text">online</span></span>
+        </header>
+        <div class="chat-log" id="chat-log" aria-live="polite"><div class="loading"><span class="spinner"></span></div></div>
+        <button class="new-pill" id="new-pill" hidden>New messages ↓</button>
+        <form class="composer" id="composer">
+          <textarea class="input" id="chat-input" rows="1" maxlength="500" placeholder="Message #${esc(r.name)}" aria-label="Message"></textarea>
+          <button class="btn btn-primary send" type="submit" aria-label="Send">${ic.send}</button>
+        </form>
+        <div class="chat-foot"><span>Enter to send · Shift+Enter for a new line · Be respectful, no financial advice or spam.</span><span id="chat-count"></span></div>
+      </section></div>`, 'chat');
+    paintOnline();
+    connectChat(room);
+    try {
+      const d = await api(`/chat/${room}/messages`);
+      if (chat.room !== room) return;
+      const ids = new Set(d.messages.map((m) => m.id));
+      chat.messages = [...d.messages, ...chat.messages.filter((m) => !ids.has(m.id))].sort((a, b) => a.id - b.id);
+      chat.hasMore = d.has_more;
+      paintChat('bottom');
+    } catch (e) { return handleErr(e); }
+
+    const log = $('#chat-log'), input = $('#chat-input'), form = $('#composer');
+    log.addEventListener('scroll', () => { if (log.scrollHeight - log.scrollTop - log.clientHeight < 60) $('#new-pill').hidden = true; });
+    $('#new-pill').onclick = () => paintChat('bottom');
+    log.onclick = async (e) => {
+      const d = e.target.closest('[data-del]'); if (!d) return;
+      if (!confirm('Delete this message?')) return;
+      try { await api(`/chat/messages/${d.dataset.del}`, { method: 'DELETE', body: {} }); }
+      catch (err) { toast(err.message); }
+    };
+    const grow = () => {
+      input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 140) + 'px';
+      const left = 500 - input.value.length; $('#chat-count').textContent = left < 80 ? `${left}` : '';
+    };
+    input.addEventListener('input', grow);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); }
+    });
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      const body = input.value.trim(); if (!body) return;
+      const btn = form.querySelector('.send'); btn.disabled = true;
+      try {
+        const { message } = await api(`/chat/${room}/messages`, { method: 'POST', body: { body } });
+        input.value = ''; grow();
+        if (!chat.messages.some((x) => x.id === message.id)) { chat.messages.push(message); }
+        paintChat('bottom');
+      } catch (err) { toast(err.message); }
+      btn.disabled = false; input.focus();
+    };
+    if (matchMedia('(min-width: 761px)').matches) input.focus();
   }
 
   // ---------- settings ----------
