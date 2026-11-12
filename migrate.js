@@ -44,6 +44,13 @@ const SCHEMA = `
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS idx_chat_room_id ON chat_messages(room, id DESC);
+    CREATE TABLE IF NOT EXISTS chat_bans (
+      user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      until TIMESTAMPTZ,              -- NULL = permanent
+      reason TEXT NOT NULL DEFAULT '',
+      banned_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
   `;
 
 async function runMigrations() {

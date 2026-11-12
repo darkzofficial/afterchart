@@ -41,7 +41,7 @@
       credentials: 'same-origin',
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) { const e = new Error(data.error || 'Something went wrong.'); e.status = res.status; throw e; }
+    if (!res.ok) { const e = new Error(data.error || 'Something went wrong.'); e.status = res.status; if (data.mute) e.mute = data.mute; throw e; }
     return data;
   }
 
@@ -57,6 +57,8 @@
     users: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14a6.5 6.5 0 0 1 3.5 6"/></svg>',
     send: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4 20-7z"/></svg>',
     chat: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20.5l1.4-4.9A8 8 0 1 1 21 12z"/></svg>',
+    shield: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6l8-3z"/></svg>',
+    mute: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M5.6 5.6l12.8 12.8"/></svg>',
     lock: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
   };
 
@@ -742,7 +744,7 @@
     const head = `<div class="card profile-head">
       <span class="avatar lg">${initial(u)}</span>
       <div style="flex:1;min-width:200px">
-        <h1>${esc(u.display_name)}</h1><div class="handle">@${esc(u.username)}</div>
+        <h1>${esc(u.display_name)}${u.is_mod ? ' ' + '<span class="mod-badge lg">MOD</span>' : ''}</h1><div class="handle">@${esc(u.username)}</div>
         ${u.bio ? `<p class="bio">${esc(u.bio)}</p>` : ''}
         <div class="joined">Joined ${joined}${isSelf ? ` · ${u.is_public ? 'Public profile' : 'Private — only you can see this'}` : ''}</div>
       </div>
@@ -762,7 +764,8 @@
   }
 
   // ---------- live chat ----------
-  const chat = { es: null, room: null, rooms: [], messages: [], hasMore: false, online: {} };
+  const chat = { es: null, room: null, rooms: [], messages: [], hasMore: false, online: {}, me: { is_mod: false, muted: false } };
+  const modBadge = '<span class="mod-badge" title="Moderator">MOD</span>';
   function stopChat() { if (chat.es) { chat.es.close(); chat.es = null; } }
 
   const timeOf = (iso) => new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
@@ -788,14 +791,16 @@
       const newDay = !prev || new Date(prev.created_at).toDateString() !== new Date(m.created_at).toDateString();
       if (newDay) out += `<div class="day-div"><span>${dayLabel(m.created_at)}</span></div>`;
       const cont = !newDay && prev && prev.username === m.username && new Date(m.created_at) - new Date(prev.created_at) < 5 * 6e4;
-      const mine = m.username === state.user.username;
+      const mine = m.username === state.user.username, mod = chat.me.is_mod;
+      const actions = (mine || mod ? `<button class="msg-act del" data-del="${m.id}" title="Delete message" aria-label="Delete message">${ic.x}</button>` : '')
+        + (mod && !mine && !m.is_mod ? `<button class="msg-act" data-mute="${esc(m.username)}" data-name="${esc(m.display_name)}" title="Mute @${esc(m.username)}" aria-label="Mute @${esc(m.username)}">${ic.mute}</button>` : '');
       out += `<div class="msg ${cont ? 'cont' : ''} ${mine ? 'mine' : ''}" data-id="${m.id}">
         ${cont ? `<time class="msg-side">${timeOf(m.created_at)}</time>` : `<a class="avatar" href="/u/${esc(m.username)}" data-link>${initial(m)}</a>`}
         <div class="msg-b">
-          ${cont ? '' : `<div class="msg-h"><a class="msg-name" href="/u/${esc(m.username)}" data-link>${esc(m.display_name)}</a><span class="msg-at">@${esc(m.username)}</span><time>${timeOf(m.created_at)}</time></div>`}
+          ${cont ? '' : `<div class="msg-h"><a class="msg-name" href="/u/${esc(m.username)}" data-link>${esc(m.display_name)}</a>${m.is_mod ? modBadge : ''}<span class="msg-at">@${esc(m.username)}</span><time>${timeOf(m.created_at)}</time></div>`}
           <div class="msg-t">${fmtBody(m.body)}</div>
         </div>
-        ${mine ? `<button class="msg-del" data-del="${m.id}" title="Delete message" aria-label="Delete message">${ic.x}</button>` : ''}
+        <div class="msg-acts">${actions}</div>
       </div>`;
       prev = m;
     }
@@ -861,13 +866,81 @@
       chat.messages = chat.messages.filter((x) => x.id !== id); paintChat('keep');
     });
     es.addEventListener('presence', (e) => { chat.online = JSON.parse(e.data); paintOnline(); });
+    es.addEventListener('muted', (e) => { chat.me = { ...chat.me, ...JSON.parse(e.data) }; paintMuted(); toast('A moderator muted you in chat.'); });
+    es.addEventListener('unmuted', () => { chat.me = { ...chat.me, muted: false }; paintMuted(); toast('You can chat again.'); });
+  }
+
+  function paintMuted() {
+    const note = $('#muted-note'), form = $('#composer'); if (!note || !form) return;
+    let muted = chat.me.muted;
+    if (muted && chat.me.until && new Date(chat.me.until) <= new Date()) muted = chat.me.muted = false;
+    note.hidden = !muted; form.hidden = !!muted;
+    if (muted) note.innerHTML = `${ic.mute}<span>You're muted in chat ${chat.me.until
+      ? `until <b>${new Date(chat.me.until).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</b>` : '<b>permanently</b>'}${chat.me.reason ? ` · Reason: ${esc(chat.me.reason)}` : ''}</span>`;
+  }
+
+  function muteModal(username, name) {
+    let dur = '24h';
+    $('#modal-root').innerHTML = `
+      <div class="modal-bg" id="mbg"><form class="modal" id="mf" role="dialog" aria-modal="true" aria-labelledby="mt" style="max-width:460px">
+        <div class="modal-head"><h2 id="mt">Mute ${esc(name)} <span class="muted mono" style="font-weight:400;font-size:14px">@${esc(username)}</span></h2>
+          <button type="button" class="btn btn-ghost btn-sm" id="mclose" aria-label="Close">${ic.x}</button></div>
+        <div class="modal-body">
+          <div id="merr"></div>
+          <div class="field"><label>Mute for</label>
+            <div class="seg" id="dur">${[['1h', '1 hour'], ['24h', '24 hours'], ['7d', '7 days'], ['perm', 'Permanent']].map(([k, l]) =>
+              `<button type="button" data-d="${k}" class="${k === dur ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+          <div class="field"><label for="reason">Reason <span class="muted">(shown to them)</span></label>
+            <input class="input" id="reason" maxlength="200" placeholder="e.g. Spam, scam links, harassment" /></div>
+          <label class="switch"><input type="checkbox" id="purge" checked />
+            <div><b>Remove their recent messages</b><span>Deletes everything they posted in the last 24 hours, in every room.</span></div></label>
+        </div>
+        <div class="modal-foot"><span></span><div style="display:flex;gap:8px">
+          <button type="button" class="btn" id="mcancel">Cancel</button>
+          <button type="submit" class="btn btn-danger">${ic.mute} Mute</button></div></div>
+      </form></div>`;
+    $('#dur').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; dur = b.dataset.d;
+      $('#dur').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b)); };
+    $('#mclose').onclick = closeModal; $('#mcancel').onclick = closeModal;
+    $('#mbg').onmousedown = (e) => { if (e.target.id === 'mbg') closeModal(); };
+    document.onkeydown = (e) => { if (e.key === 'Escape') closeModal(); };
+    $('#mf').onsubmit = async (e) => {
+      e.preventDefault();
+      try {
+        const r = await api('/chat/bans', { method: 'POST', body: { username, duration: dur, reason: $('#reason').value, purge: $('#purge').checked } });
+        closeModal(); toast(`Muted @${username}${r.removed ? ` · removed ${r.removed} message${r.removed === 1 ? '' : 's'}` : ''}`);
+      } catch (err) { $('#merr').innerHTML = `<div class="error-box">${esc(err.message)}</div>`; }
+    };
+  }
+
+  async function bansModal() {
+    let bans = [];
+    try { bans = (await api('/chat/bans')).bans; } catch (e) { return toast(e.message); }
+    const when = (b) => (b.until ? 'until ' + new Date(b.until).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'permanently');
+    $('#modal-root').innerHTML = `
+      <div class="modal-bg" id="mbg"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="mt">
+        <div class="modal-head"><div><h2 id="mt">Muted users</h2><div class="muted" style="font-size:13px;margin-top:2px">Hover a message and press ${ic.mute} to mute someone.</div></div>
+          <button type="button" class="btn btn-ghost btn-sm" id="mclose" aria-label="Close">${ic.x}</button></div>
+        <div class="modal-body">${bans.length ? `<div class="day-list">${bans.map((b) => `
+          <div class="day-row" style="cursor:default;grid-template-columns:minmax(0,1fr) auto">
+            <span><b>${esc(b.display_name)}</b> <span class="mono muted">@${esc(b.username)}</span>
+              <div class="hint">Muted ${when(b)}${b.banned_by ? ` by @${esc(b.banned_by)}` : ''}${b.reason ? ` · ${esc(b.reason)}` : ''}</div></span>
+            <button class="btn btn-sm" data-unmute="${esc(b.username)}">Unmute</button>
+          </div>`).join('')}</div>` : '<div class="empty" style="padding:24px 0"><p>Nobody is muted right now.</p></div>'}</div>
+      </div></div>`;
+    $('#mclose').onclick = closeModal;
+    $('#mbg').onmousedown = (e) => { if (e.target.id === 'mbg') closeModal(); };
+    document.onkeydown = (e) => { if (e.key === 'Escape') closeModal(); };
+    $('.modal-body').onclick = async (e) => {
+      const b = e.target.closest('[data-unmute]'); if (!b) return;
+      try { await api(`/chat/bans/${b.dataset.unmute}`, { method: 'DELETE', body: {} }); toast(`Unmuted @${b.dataset.unmute}`); bansModal(); }
+      catch (err) { toast(err.message); }
+    };
   }
 
   async function renderChat(room) {
-    if (!chat.rooms.length) {
-      shell(`<div class="loading"><span class="spinner"></span></div>`, 'chat');
-      try { chat.rooms = (await api('/chat/rooms')).rooms; } catch (e) { return handleErr(e); }
-    }
+    if (!chat.rooms.length) shell(`<div class="loading"><span class="spinner"></span></div>`, 'chat');
+    try { const d = await api('/chat/rooms'); chat.rooms = d.rooms; chat.me = d.me; } catch (e) { return handleErr(e); }
     const r = chat.rooms.find((x) => x.id === room);
     if (!r) return go('/chat/general', true);
     chat.room = room; chat.messages = []; chat.hasMore = false;
@@ -881,10 +954,12 @@
       <section class="chat-main">
         <header class="chat-head">
           <div class="chat-title"><h1>#${esc(r.name)}</h1><span>${esc(r.desc)}</span></div>
-          <span class="live" id="live"><span class="live-dot"></span><b id="online-n">–</b><span id="live-text">online</span></span>
+          <div class="chat-head-r">${chat.me.is_mod ? `<button class="btn btn-sm mod-btn" id="mod-panel">${ic.shield} Muted users</button>` : ''}
+          <span class="live" id="live"><span class="live-dot"></span><b id="online-n">–</b><span id="live-text">online</span></span></div>
         </header>
         <div class="chat-log" id="chat-log" aria-live="polite"><div class="loading"><span class="spinner"></span></div></div>
         <button class="new-pill" id="new-pill" hidden>New messages ↓</button>
+        <div class="muted-note" id="muted-note" hidden></div>
         <form class="composer" id="composer">
           <textarea class="input" id="chat-input" rows="1" maxlength="500" placeholder="Message #${esc(r.name)}" aria-label="Message"></textarea>
           <button class="btn btn-primary send" type="submit" aria-label="Send">${ic.send}</button>
@@ -892,7 +967,9 @@
         <div class="chat-foot"><span>Enter to send · Shift+Enter for a new line · Be respectful, no financial advice or spam.</span><span id="chat-count"></span></div>
       </section></div>`, 'chat');
     paintOnline();
+    paintMuted();
     connectChat(room);
+    const mp = $('#mod-panel'); if (mp) mp.onclick = bansModal;
     try {
       const d = await api(`/chat/${room}/messages`);
       if (chat.room !== room) return;
@@ -906,6 +983,8 @@
     log.addEventListener('scroll', () => { if (log.scrollHeight - log.scrollTop - log.clientHeight < 60) $('#new-pill').hidden = true; });
     $('#new-pill').onclick = () => paintChat('bottom');
     log.onclick = async (e) => {
+      const mu = e.target.closest('[data-mute]');
+      if (mu) return muteModal(mu.dataset.mute, mu.dataset.name);
       const d = e.target.closest('[data-del]'); if (!d) return;
       if (!confirm('Delete this message?')) return;
       try { await api(`/chat/messages/${d.dataset.del}`, { method: 'DELETE', body: {} }); }
@@ -922,14 +1001,17 @@
     form.onsubmit = async (e) => {
       e.preventDefault();
       const body = input.value.trim(); if (!body) return;
-      const btn = form.querySelector('.send'); btn.disabled = true;
+      input.value = ''; grow(); // clear right away so typing the next message is never wiped
       try {
         const { message } = await api(`/chat/${room}/messages`, { method: 'POST', body: { body } });
-        input.value = ''; grow();
         if (!chat.messages.some((x) => x.id === message.id)) { chat.messages.push(message); }
         paintChat('bottom');
-      } catch (err) { toast(err.message); }
-      btn.disabled = false; input.focus();
+      } catch (err) {
+        if (!input.value) { input.value = body; grow(); } // give the text back so nothing is lost
+        if (err.mute) { chat.me = { ...chat.me, ...err.mute }; paintMuted(); }
+        toast(err.message);
+      }
+      input.focus();
     };
     if (matchMedia('(min-width: 761px)').matches) input.focus();
   }

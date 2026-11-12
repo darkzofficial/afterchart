@@ -9,6 +9,9 @@ const { runMigrations } = require('./migrate');
 const { registerChat } = require('./chat');
 
 const PORT = process.env.PORT || 3000;
+// Moderators are set by the server owner only, e.g. MODERATORS="yourname,othermod" in the host's env settings.
+const MODERATORS = new Set((process.env.MODERATORS || '').split(',').map((s) => s.trim().replace(/^@/, '').toLowerCase()).filter(Boolean));
+const isModName = (username) => MODERATORS.has(String(username || '').toLowerCase());
 const SESSION_DAYS = 30;
 const IS_PROD = process.env.NODE_ENV === 'production';
 
@@ -55,7 +58,7 @@ async function createSession(res, userId) {
 function publicUser(u) {
   return {
     username: u.username, display_name: u.display_name, bio: u.bio,
-    is_public: !!u.is_public, created_at: new Date(u.created_at).toISOString(),
+    is_public: !!u.is_public, created_at: new Date(u.created_at).toISOString(), is_mod: isModName(u.username),
   };
 }
 const privateUser = (u) => ({ ...publicUser(u), email: u.email });
@@ -292,7 +295,7 @@ app.get('/api/users/:username', requireAuth, async (req, res) => {
   res.json({ user: publicUser(u), is_self: isSelf, trades, stats: stats(trades) });
 });
 
-registerChat(app, { q, one, requireAuth });
+registerChat(app, { q, one, requireAuth, isModName });
 
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found.' }));
 

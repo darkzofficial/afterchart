@@ -19,6 +19,10 @@ Open http://localhost:3000. Tables are created automatically on start (or run `n
 - `DATABASE_URL` — **pooled** (`-pooler` host). Used for all app queries.
 - `DATABASE_URL_UNPOOLED` — **direct**. Used only by `migrate.js` for schema changes.
 
+### Moderators
+
+Set `MODERATORS` to a comma-separated list of @usernames in your host's environment settings (e.g. `MODERATORS=yourname`). Only the server owner can change it.
+
 ## What's inside
 
 - `server.js` — Express API (Postgres via `pg`).
@@ -37,6 +41,7 @@ Open http://localhost:3000. Tables are created automatically on start (or run `n
 - Dashboard: net P&L, win rate, profit factor, max drawdown, avg win/loss, best/worst, equity curve
 - Trade log with filters (open / closed / wins / losses) and symbol search; CSV export
 - Live chat: topic rooms (#general, #stocks, #forex, #crypto, #futures, #wins-and-losses) with real-time messages over Server-Sent Events, online counts, @mention links, $TICKER highlighting, delete-your-own, rate limiting
+- Chat moderation: moderators (set with the `MODERATORS` env var) get a MOD badge, can delete any message, mute members for 1h/24h/7d/permanently (optionally removing their last 24h of messages) and unmute them
 - Search bar (press `/`) to find traders by @username and view their public profile, stats and trades
 - Settings: display name, bio, public/private profile toggle
 
